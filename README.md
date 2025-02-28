@@ -1,43 +1,86 @@
 # Programming Practice Generator - Frontend
 
-This is the frontend application for the Programming Practice Generator tool. It provides a user interface for generating programming practice problems using AI.
+A React-based frontend for the Programming Practice Generator tool. Generate programming problems with varying difficulty levels and get structured learning paths.
 
 ## Features
 
-- Input programming topics and languages
-- Select difficulty levels
-- Generate customized practice problems
-- View problems with examples and hints
-- Material-UI based responsive design
+- Clean, modern Material-UI interface
+- Support for multiple difficulty levels
+- Real-time problem generation
+- Structured learning paths
+- Detailed problem examples and explanations
+- Mobile-responsive design
 
-## Setup
+## Prerequisites
 
-1. Install dependencies:
+- Node.js (v14 or higher)
+- npm (Node Package Manager)
+- Backend server running on port 3001
+
+## Installation
+
+1. Clone the repository:
+```bash
+git clone <repository-url>
+cd hands-on-programming-tool-frontend
+```
+
+2. Install dependencies:
 ```bash
 npm install
 ```
 
-2. Start the development server:
+## Running the Application
+
+1. Start the development server:
 ```bash
 npm start
 ```
 
-The application will start on port 3000.
+2. Open [http://localhost:3000](http://localhost:3000) in your browser
 
-## Configuration
+## Usage
 
-The application expects the backend server to be running on `http://localhost:3001`. If your backend is running on a different port or host, update the API endpoint in `src/App.js`.
+1. Enter a programming topic (e.g., "For Loops", "Binary Search")
+2. Select a programming language (e.g., "Python", "JavaScript")
+3. Choose a difficulty level (Beginner, Intermediate, Advanced)
+4. Click "Generate Problems" to get a customized learning path
 
-## Available Scripts
+## Components
 
-- `npm start`: Runs the app in development mode
-- `npm test`: Launches the test runner
-- `npm run build`: Builds the app for production
-- `npm run eject`: Ejects from Create React App
+### Main Components
+- Problem Generator Form
+- Learning Path Display
+- Problem Cards
+- Example Viewer
 
-## Dependencies
+### Features
+- Difficulty level selection
+- Concept tags
+- Prerequisites list
+- Example input/output display
+- Mobile-responsive layout
 
-- React
-- Material-UI
-- Axios for API calls
-- Emotion for styled components
+## Development
+
+To run in development mode with hot reloading:
+```bash
+npm run start
+```
+
+To build for production:
+```bash
+npm run build
+```
+
+## Contributing
+
+1. Fork the repository
+2. Create your feature branch
+3. Commit your changes
+4. Push to the branch
+5. Create a new Pull Request
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.

@@ -1,146 +1,219 @@
 import React, { useState } from 'react';
-import axios from 'axios';
 import {
   Container,
-  Box,
   TextField,
   Button,
-  Typography,
   Card,
   CardContent,
+  Typography,
+  Box,
+  CircularProgress,
+  Alert,
+  Chip,
+  Divider,
+  Paper,
+  List,
+  ListItem,
+  ListItemText,
   FormControl,
   InputLabel,
   Select,
-  MenuItem,
-  CircularProgress
+  MenuItem
 } from '@mui/material';
 
 function App() {
   const [topic, setTopic] = useState('');
   const [language, setLanguage] = useState('');
   const [difficulty, setDifficulty] = useState('beginner');
-  const [problems, setProblems] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [problems, setProblems] = useState(null);
+  const [pathDescription, setPathDescription] = useState('');
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
+    setProblems(null);
+    setPathDescription('');
 
     try {
-      const response = await axios.post('http://localhost:3001/generate-problems', {
-        topic,
-        language,
-        difficulty
+      const response = await fetch('http://localhost:3001/generate-problems', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          topic,
+          language,
+          difficulty
+        }),
       });
-      const data = response.data.problems;
-      try {
-        setProblems(typeof data === 'string' ? JSON.parse(data) : data);
-      } catch (parseError) {
-        console.error('Error parsing response:', parseError);
-        setError('Invalid response format from server');
+
+      const data = await response.json();
+      if (response.ok) {
+        setProblems(data.learningPath.problems);
+        setPathDescription(data.learningPath.description);
+      } else {
+        setError(data.error || 'Failed to generate problems');
       }
     } catch (err) {
-      setError('Failed to generate problems. Please try again.');
-      console.error('Error:', err);
+      setError('Failed to connect to the server');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <Container maxWidth="md">
-      <Box sx={{ my: 4 }}>
-        <Typography variant="h4" component="h1" gutterBottom>
-          Programming Practice Generator
-        </Typography>
-        
-        <Box component="form" onSubmit={handleSubmit} sx={{ mt: 3 }}>
-          <TextField
-            fullWidth
-            label="Programming Topic"
-            value={topic}
-            onChange={(e) => setTopic(e.target.value)}
-            margin="normal"
-            required
-          />
-          
-          <TextField
-            fullWidth
-            label="Programming Language"
-            value={language}
-            onChange={(e) => setLanguage(e.target.value)}
-            margin="normal"
-            required
-          />
-          
-          <FormControl fullWidth margin="normal">
-            <InputLabel>Difficulty Level</InputLabel>
-            <Select
-              value={difficulty}
-              onChange={(e) => setDifficulty(e.target.value)}
-              label="Difficulty Level"
-            >
-              <MenuItem value="beginner">Beginner</MenuItem>
-              <MenuItem value="intermediate">Intermediate</MenuItem>
-              <MenuItem value="advanced">Advanced</MenuItem>
-            </Select>
-          </FormControl>
-          
+    <Container maxWidth="md" sx={{ py: 4 }}>
+      <Typography variant="h4" component="h1" gutterBottom align="center">
+        Programming Problem Generator
+      </Typography>
+
+      <Paper elevation={3} sx={{ p: 3, mb: 4 }}>
+        <form onSubmit={handleSubmit}>
+          <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
+            <TextField
+              fullWidth
+              label="Topic"
+              value={topic}
+              onChange={(e) => setTopic(e.target.value)}
+              required
+              variant="outlined"
+            />
+            <TextField
+              fullWidth
+              label="Programming Language"
+              value={language}
+              onChange={(e) => setLanguage(e.target.value)}
+              required
+              variant="outlined"
+            />
+            <FormControl fullWidth variant="outlined">
+              <InputLabel>Difficulty</InputLabel>
+              <Select
+                value={difficulty}
+                onChange={(e) => setDifficulty(e.target.value)}
+                label="Difficulty"
+              >
+                <MenuItem value="beginner">Beginner</MenuItem>
+                <MenuItem value="intermediate">Intermediate</MenuItem>
+                <MenuItem value="advanced">Advanced</MenuItem>
+              </Select>
+            </FormControl>
+          </Box>
           <Button
             type="submit"
             variant="contained"
             color="primary"
             fullWidth
-            sx={{ mt: 2 }}
             disabled={loading}
           >
             {loading ? <CircularProgress size={24} /> : 'Generate Problems'}
           </Button>
-        </Box>
+        </form>
+      </Paper>
 
-        {error && (
-          <Typography color="error" sx={{ mt: 2 }}>
-            {error}
+      {error && (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          {error}
+        </Alert>
+      )}
+
+      {pathDescription && (
+        <Paper elevation={2} sx={{ p: 2, mb: 3, bgcolor: 'primary.light' }}>
+          <Typography variant="h6" color="white" gutterBottom>
+            Learning Journey
           </Typography>
-        )}
+          <Typography variant="body1" color="white">
+            {pathDescription}
+          </Typography>
+        </Paper>
+      )}
 
-        {problems && (
-          <Box sx={{ mt: 4 }}>
-            {problems.map((problem, index) => (
-              <Card key={index} sx={{ mb: 2 }}>
-                <CardContent>
-                  <Typography variant="h6" gutterBottom>
-                    Problem {index + 1}
+      {problems && problems.map((problem, index) => (
+        <Card key={index} sx={{ mb: 2 }}>
+          <CardContent>
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+              <Typography variant="h5" component="h2">
+                {problem.title}
+              </Typography>
+              <Box sx={{ display: 'flex', gap: 1 }}>
+                <Chip 
+                  label={`Level ${problem.level}`} 
+                  color="primary" 
+                  variant="outlined"
+                />
+                <Chip 
+                  label={difficulty.charAt(0).toUpperCase() + difficulty.slice(1)} 
+                  color="secondary" 
+                  variant="outlined"
+                />
+              </Box>
+            </Box>
+
+            <Box sx={{ mb: 2 }}>
+              {problem.concepts.map((concept, i) => (
+                <Chip
+                  key={i}
+                  label={concept}
+                  size="small"
+                  sx={{ mr: 1, mb: 1 }}
+                />
+              ))}
+            </Box>
+
+            <Typography variant="body1" paragraph>
+              {problem.description}
+            </Typography>
+
+            <Typography variant="h6" gutterBottom>
+              Prerequisites:
+            </Typography>
+            <List dense>
+              {problem.prerequisites.map((prereq, i) => (
+                <ListItem key={i}>
+                  <ListItemText primary={prereq} />
+                </ListItem>
+              ))}
+            </List>
+
+            <Divider sx={{ my: 2 }} />
+
+            <Typography variant="h6" gutterBottom>
+              Examples:
+            </Typography>
+            {problem.examples.map((example, i) => (
+              <Box key={i} sx={{ mb: 2 }}>
+                <Typography variant="subtitle2" color="text.secondary">
+                  Input:
+                </Typography>
+                <Paper variant="outlined" sx={{ p: 1, mb: 1, bgcolor: 'grey.50' }}>
+                  <Typography variant="body2" component="pre" sx={{ m: 0 }}>
+                    {example.input}
                   </Typography>
-                  <Typography variant="body1" paragraph>
-                    {problem.statement}
+                </Paper>
+
+                <Typography variant="subtitle2" color="text.secondary">
+                  Output:
+                </Typography>
+                <Paper variant="outlined" sx={{ p: 1, mb: 1, bgcolor: 'grey.50' }}>
+                  <Typography variant="body2" component="pre" sx={{ m: 0 }}>
+                    {example.output}
                   </Typography>
-                  <Typography variant="h6" gutterBottom>
-                    Example Input/Output:
-                  </Typography>
-                  <Typography variant="body1" paragraph>
-                    {problem.example}
-                  </Typography>
-                  <Typography variant="h6" gutterBottom>
-                    Hints:
-                  </Typography>
-                  <Typography variant="body1" paragraph>
-                    {problem.hints}
-                  </Typography>
-                  <Typography variant="h6" gutterBottom>
-                    Learning Objectives:
-                  </Typography>
-                  <Typography variant="body1">
-                    {problem.objectives}
-                  </Typography>
-                </CardContent>
-              </Card>
+                </Paper>
+
+                <Typography variant="subtitle2" color="text.secondary">
+                  Explanation:
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {example.explanation}
+                </Typography>
+              </Box>
             ))}
-          </Box>
-        )}
-      </Box>
+          </CardContent>
+        </Card>
+      ))}
     </Container>
   );
 }
