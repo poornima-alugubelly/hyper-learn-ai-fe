@@ -11,6 +11,9 @@ A React-based frontend for the Programming Practice Generator tool. Generate pro
 - Detailed problem examples and explanations
 - Mobile-responsive design
 
+<img width="1227" alt="image" src="https://github.com/user-attachments/assets/41545214-4f44-4f4c-946a-ca2da50f0681" />
+
+
 ## Prerequisites
 
 - Node.js (v14 or higher)
