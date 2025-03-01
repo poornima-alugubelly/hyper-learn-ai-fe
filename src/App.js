@@ -7,6 +7,10 @@ import {
   CardContent,
   Typography,
   Box,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
   CircularProgress,
   Alert,
   Chip,
@@ -15,11 +19,10 @@ import {
   List,
   ListItem,
   ListItemText,
-  FormControl,
-  InputLabel,
-  Select,
-  MenuItem
+  IconButton,
+  Tooltip
 } from '@mui/material';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 
 function App() {
   const [topic, setTopic] = useState('');
@@ -64,6 +67,50 @@ function App() {
     }
   };
 
+  const handleLearnMore = (problem) => {
+    // Create a new topic based on the problem title and concepts
+    const newTopic = `${problem.title}: ${problem.concepts.join(', ')}`;
+    
+    // Open a new tab with the problem details
+    const newWindow = window.open('', '_blank');
+    
+    // Store the problem details in localStorage for the new tab
+    localStorage.setItem('learnMoreDetails', JSON.stringify({
+      topic: newTopic,
+      language,
+      difficulty
+    }));
+    
+    // Navigate to the same app but with a special query parameter
+    newWindow.location.href = `${window.location.origin}?learnMore=true`;
+  };
+
+  // Check if this is a "Learn More" tab on load
+  React.useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const isLearnMore = urlParams.get('learnMore');
+    
+    if (isLearnMore) {
+      const storedDetails = localStorage.getItem('learnMoreDetails');
+      if (storedDetails) {
+        const details = JSON.parse(storedDetails);
+        setTopic(details.topic);
+        setLanguage(details.language);
+        setDifficulty(details.difficulty);
+        
+        // Clear the stored details
+        localStorage.removeItem('learnMoreDetails');
+        
+        // Automatically submit the form
+        setTimeout(() => {
+          document.getElementById('generateForm').dispatchEvent(
+            new Event('submit', { cancelable: true, bubbles: true })
+          );
+        }, 500);
+      }
+    }
+  }, []);
+
   return (
     <Container maxWidth="md" sx={{ py: 4 }}>
       <Typography variant="h4" component="h1" gutterBottom align="center">
@@ -71,8 +118,8 @@ function App() {
       </Typography>
 
       <Paper elevation={3} sx={{ p: 3, mb: 4 }}>
-        <form onSubmit={handleSubmit}>
-          <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
+        <form id="generateForm" onSubmit={handleSubmit}>
+          <Box sx={{ display: 'flex', gap: 2, mb: 2, flexWrap: 'wrap' }}>
             <TextField
               fullWidth
               label="Topic"
@@ -149,6 +196,15 @@ function App() {
                   color="secondary" 
                   variant="outlined"
                 />
+                <Tooltip title="Learn more about this topic (opens in new tab)">
+                  <IconButton 
+                    color="primary" 
+                    onClick={() => handleLearnMore(problem)}
+                    aria-label="learn more"
+                  >
+                    <OpenInNewIcon />
+                  </IconButton>
+                </Tooltip>
               </Box>
             </Box>
 
@@ -178,39 +234,32 @@ function App() {
               ))}
             </List>
 
-            <Divider sx={{ my: 2 }} />
-
-            <Typography variant="h6" gutterBottom>
-              Examples:
-            </Typography>
-            {problem.examples.map((example, i) => (
-              <Box key={i} sx={{ mb: 2 }}>
-                <Typography variant="subtitle2" color="text.secondary">
-                  Input:
+            {problem.hints && problem.hints.length > 0 && (
+              <>
+                <Divider sx={{ my: 2 }} />
+                <Typography variant="h6" gutterBottom>
+                  Hints:
                 </Typography>
-                <Paper variant="outlined" sx={{ p: 1, mb: 1, bgcolor: 'grey.50' }}>
-                  <Typography variant="body2" component="pre" sx={{ m: 0 }}>
-                    {example.input}
-                  </Typography>
-                </Paper>
-
-                <Typography variant="subtitle2" color="text.secondary">
-                  Output:
-                </Typography>
-                <Paper variant="outlined" sx={{ p: 1, mb: 1, bgcolor: 'grey.50' }}>
-                  <Typography variant="body2" component="pre" sx={{ m: 0 }}>
-                    {example.output}
-                  </Typography>
-                </Paper>
-
-                <Typography variant="subtitle2" color="text.secondary">
-                  Explanation:
-                </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  {example.explanation}
-                </Typography>
-              </Box>
-            ))}
+                <List dense>
+                  {problem.hints.map((hint, i) => (
+                    <ListItem key={i}>
+                      <ListItemText primary={hint} />
+                    </ListItem>
+                  ))}
+                </List>
+              </>
+            )}
+            
+            <Box sx={{ mt: 2, display: 'flex', justifyContent: 'flex-end' }}>
+              <Button
+                variant="contained"
+                color="primary"
+                endIcon={<OpenInNewIcon />}
+                onClick={() => handleLearnMore(problem)}
+              >
+                Learn More
+              </Button>
+            </Box>
           </CardContent>
         </Card>
       ))}
