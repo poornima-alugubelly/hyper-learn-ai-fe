@@ -14,7 +14,7 @@ on:
 jobs:
   update-dependencies:
     runs-on: ubuntu-latest
-    permissions: # Explicitly set permissions for GITHUB_TOKEN
+    permissions:
       contents: write
       pull-requests: write
     
@@ -31,14 +31,12 @@ jobs:
         cache: 'npm'
     
     - name: Install current dependencies
-      run: npm install --ignore-scripts # Initial install, ignore-scripts for speed/safety if not needed
+      run: npm install --ignore-scripts
     
-    - name: Create backup and excluded packages list
+    - name: Create backup and define exclusion lists
       run: |
-        # Define packages to exclude from updates
-        EXCLUDED_PACKAGES=(
-          "react"
-          "react-dom"
+        # Define packages to exclude by EXACT NAME
+        EXCLUDED_PACKAGES_EXACT=(
           "@types/node"
           "typescript"
           "webpack"
@@ -48,83 +46,131 @@ jobs:
           "express"
           "axios"
         )
+
+        # Define SUBSTRINGS to identify packages for exclusion
+        # If a package name CONTAINS any of these, it will be excluded.
+        # Be careful with overly broad substrings.
+        EXCLUDED_SUBSTRINGS=(
+          "dom"
+        )
         
         # Create backups
         cp package.json package.json.backup
         cp package-lock.json package-lock.json.backup
         
-        echo "EXCLUDED_PACKAGES_STR=${EXCLUDED_PACKAGES[*]}" >> $GITHUB_ENV
+        echo "EXCLUDED_PACKAGES_EXACT_STR=${EXCLUDED_PACKAGES_EXACT[*]}" >> $GITHUB_ENV
+        echo "EXCLUDED_SUBSTRINGS_STR=${EXCLUDED_SUBSTRINGS[*]}" >> $GITHUB_ENV
         echo "Original package.json and package-lock.json backed up."
+        echo "Exclusion Lists:"
+        echo "Exact names: ${EXCLUDED_PACKAGES_EXACT[*]}"
+        echo "Substrings: ${EXCLUDED_SUBSTRINGS[*]}"
     
-    - name: Temporarily Pin Excluded Packages to Exact Resolved Versions
+    - name: Temporarily Pin Excluded Packages (by Exact Name or Substring)
       env:
-        EXCLUDED_PACKAGES_ENV: ${{ env.EXCLUDED_PACKAGES_STR }}
+        EXACT_NAMES_ENV: ${{ env.EXCLUDED_PACKAGES_EXACT_STR }}
+        SUBSTRINGS_ENV: ${{ env.EXCLUDED_SUBSTRINGS_STR }}
       run: |
         echo "Temporarily pinning excluded packages in live package.json..."
         node -e "
           const fs = require('fs');
           const child_process = require('child_process');
-          const excluded = (process.env.EXCLUDED_PACKAGES_ENV || '').split(' ').filter(p => p);
-          if (excluded.length === 0) {
-            console.log('No packages to exclude/pin.');
+          
+          const exactExcluded = (process.env.EXACT_NAMES_ENV || '').split(' ').filter(p => p);
+          const substringExcluded = (process.env.SUBSTRINGS_ENV || '').split(' ').filter(p => p);
+
+          if (exactExcluded.length === 0 && substringExcluded.length === 0) {
+            console.log('No exclusion rules defined. Nothing to pin.');
             process.exit(0);
           }
 
           const pkgJsonPath = 'package.json';
-          let pkg = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8'));
-          let lockPkg = JSON.parse(fs.readFileSync('package-lock.json.backup', 'utf8')); // Read from backup for original resolved versions
+          let livePkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8')); // The one we'll modify
+          const backupPkgJson = JSON.parse(fs.readFileSync('package.json.backup', 'utf8')); // Source of all deps
+          const backupLockJson = JSON.parse(fs.readFileSync('package-lock.json.backup', 'utf8'));
 
-          let changed = false;
-          for (const depName of excluded) {
+          let packagesToPin = new Set();
+          const allDepsFromBackup = { ...(backupPkgJson.dependencies || {}), ...(backupPkgJson.devDependencies || {}) };
+
+          console.log('Identifying packages to pin based on exclusion rules:');
+          for (const depName in allDepsFromBackup) {
+            let isExcluded = false;
+            if (exactExcluded.includes(depName)) {
+              isExcluded = true;
+              console.log(`  - '\${depName}' matched exact exclusion list.`);
+            }
+            if (!isExcluded) {
+              for (const substr of substringExcluded) {
+                if (depName.includes(substr)) {
+                  isExcluded = true;
+                  console.log(`  - '\${depName}' matched substring '\${substr}'.`);
+                  break;
+                }
+              }
+            }
+            if (isExcluded) {
+              packagesToPin.add(depName);
+            }
+          }
+          
+          if (packagesToPin.size === 0) {
+            console.log('No packages identified for pinning based on current dependencies and exclusion rules.');
+            process.exit(0);
+          }
+
+          console.log('Packages to be pinned:', Array.from(packagesToPin));
+          let changedInLivePkgJson = false;
+
+          for (const depNameToPin of packagesToPin) {
             let currentResolvedVersion = null;
-            
             // Try to get from package-lock.json's 'packages' structure (npm v7+)
-            if (lockPkg.packages && lockPkg.packages[\`node_modules/\${depName}\`]) {
-                currentResolvedVersion = lockPkg.packages[\`node_modules/\${depName}\`].version;
+            if (backupLockJson.packages && backupLockJson.packages[\`node_modules/\${depNameToPin}\`]) {
+                currentResolvedVersion = backupLockJson.packages[\`node_modules/\${depNameToPin}\`].version;
             } 
             // Fallback for older lockfiles or direct dependencies not in 'packages' but in 'dependencies' block of lockfile
-            else if (lockPkg.dependencies && lockPkg.dependencies[depName]) {
-                 currentResolvedVersion = lockPkg.dependencies[depName].version;
+            else if (backupLockJson.dependencies && backupLockJson.dependencies[depNameToPin]) {
+                 currentResolvedVersion = backupLockJson.dependencies[depNameToPin].version;
             }
             // As a last resort, try npm list (slower)
             else {
                 try {
-                    const listOutput = child_process.execSync(\`npm list \${depName} --json --depth=0\`, { encoding: 'utf8' });
+                    console.log(\`Attempting npm list for \${depNameToPin} as fallback to find resolved version...\`);
+                    const listOutput = child_process.execSync(\`npm list \${depNameToPin} --json --depth=0\`, { encoding: 'utf8' });
                     const listParsed = JSON.parse(listOutput);
-                    if (listParsed.dependencies && listParsed.dependencies[depName]) {
-                        currentResolvedVersion = listParsed.dependencies[depName].version;
+                    if (listParsed.dependencies && listParsed.dependencies[depNameToPin]) {
+                        currentResolvedVersion = listParsed.dependencies[depNameToPin].version;
                     }
                 } catch (e) {
-                    console.warn(\`Could not determine resolved version for \${depName} via npm list: \${e.message}\`);
+                    console.warn(\`Could not determine resolved version for '\${depNameToPin}' via npm list: \${e.message.split('\\n')[0]}\`);
                 }
             }
 
             if (currentResolvedVersion) {
-              console.log(\`Found resolved version for '\${depName}': \${currentResolvedVersion}\`);
-              if (pkg.dependencies && pkg.dependencies[depName]) {
-                if (pkg.dependencies[depName] !== currentResolvedVersion) {
-                  console.log(\`Pinning '\${depName}' in dependencies from '\${pkg.dependencies[depName]}' to '\${currentResolvedVersion}'\`);
-                  pkg.dependencies[depName] = currentResolvedVersion;
-                  changed = true;
-                }
-              } else if (pkg.devDependencies && pkg.devDependencies[depName]) {
-                if (pkg.devDependencies[depName] !== currentResolvedVersion) {
-                  console.log(\`Pinning '\${depName}' in devDependencies from '\${pkg.devDependencies[depName]}' to '\${currentResolvedVersion}'\`);
-                  pkg.devDependencies[depName] = currentResolvedVersion;
-                  changed = true;
+              console.log(\`  Found resolved version for '\${depNameToPin}': \${currentResolvedVersion}\`);
+              let targetSection = null;
+              if (livePkgJson.dependencies && livePkgJson.dependencies[depNameToPin]) targetSection = 'dependencies';
+              else if (livePkgJson.devDependencies && livePkgJson.devDependencies[depNameToPin]) targetSection = 'devDependencies';
+
+              if (targetSection) {
+                if (livePkgJson[targetSection][depNameToPin] !== currentResolvedVersion) {
+                  console.log(\`    Pinning '\${depNameToPin}' in \${targetSection} from '\${livePkgJson[targetSection][depNameToPin]}' to '\${currentResolvedVersion}'\`);
+                  livePkgJson[targetSection][depNameToPin] = currentResolvedVersion;
+                  changedInLivePkgJson = true;
+                } else {
+                  console.log(\`    '\${depNameToPin}' in \${targetSection} is already pinned to '\${currentResolvedVersion}'. No change needed.\`);
                 }
               } else {
-                console.warn(\`Excluded package '\${depName}' not found in package.json dependencies or devDependencies.\`);
+                console.warn(\`  Excluded package '\${depNameToPin}' (intended for pinning) not found in live package.json dependencies or devDependencies.\`);
               }
             } else {
-              console.warn(\`Could not find resolved version for excluded package '\${depName}'. It might not be installed or is a sub-dependency not listed directly.\`);
+              console.warn(\`  Could not find resolved version for excluded package '\${depNameToPin}'. It might not be installed or is a sub-dependency not listed directly. Skipping pinning for this package.\`);
             }
           }
-          if (changed) {
-            fs.writeFileSync(pkgJsonPath, JSON.stringify(pkg, null, 2) + '\\n');
-            console.log('Live package.json updated with pinned versions for excluded packages.');
+
+          if (changedInLivePkgJson) {
+            fs.writeFileSync(pkgJsonPath, JSON.stringify(livePkgJson, null, 2) + '\\n');
+            console.log('Live package.json updated with pinned versions for identified excluded packages.');
           } else {
-            console.log('No changes made to live package.json for pinning.');
+            console.log('No changes made to live package.json for pinning (either no packages to pin or already pinned).');
           }
         "
     
@@ -182,29 +228,34 @@ jobs:
       uses: peter-evans/create-pull-request@v5 
       with:
         token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
-        commit-message: "chore: update npm dependencies (preserving excluded)"
+        commit-message: "chore: update npm dependencies (preserving excluded by name/substring)"
         title: "🔄 NPM Update (preserving excluded packages)"
         body: |
           ## 📦 NPM Dependencies Update
           
           This PR updates npm dependencies using `npm update`, while attempting to preserve the state of excluded packages.
+          Packages are excluded if their name is an exact match in one list OR if their name contains a substring from another list.
           
           ### 🚫 Excluded Packages (Attempted Preservation)
-          The following packages were targeted for preservation (original specifiers restored after update):
+          **Exact Name Matches Targeted for Preservation:**
           ```
-          ${{ env.EXCLUDED_PACKAGES_STR }}
+          ${{ env.EXCLUDED_PACKAGES_EXACT_STR }}
+          ```
+          **Substring Matches Targeted for Preservation (packages containing these):**
+          ```
+          ${{ env.EXCLUDED_SUBSTRINGS_STR }}
           ```
           
           ### 📋 What Changed
           - `npm update` was run to update non-excluded direct dependencies and all transitive dependencies.
-          - Original version specifiers for excluded packages were restored to `package.json`.
+          - Original version specifiers for all identified excluded packages were restored to `package.json`.
           - A final `npm install` was run to ensure consistency.
           
           **Note:** While excluded package specifiers in `package.json` are restored, their resolved versions in `package-lock.json` might still change if updates to other packages create unavoidable dependency conflicts.
           
           ### ✅ Pre-merge Checklist
           - [ ] Review `package.json` and `package-lock.json` for intended changes.
-          - [ ] Verify that excluded packages behave as expected.
+          - [ ] Verify that excluded packages (by name or substring) behave as expected.
           - [ ] Run tests locally to verify compatibility.
           
           ### 🔍 How to Test Locally
