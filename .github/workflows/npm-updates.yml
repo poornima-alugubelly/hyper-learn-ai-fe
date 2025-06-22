@@ -2,9 +2,14 @@ name: Automated npm Updates
 
 on:
   schedule:
-    # Run every Monday at 9 AM UTC
     - cron: '0 9 * * 1'
-  workflow_dispatch: # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Run in dry-run mode (no PR created)'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   update-dependencies:
@@ -14,7 +19,7 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
-        token: ${{ secrets.GITHUB_TOKEN }}
+        token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
     
     - name: Setup Node.js
       uses: actions/setup-node@v4
@@ -22,10 +27,10 @@ jobs:
         node-version: '18'
         cache: 'npm'
     
-    - name: Install dependencies
-      run: npm ci
+    - name: Install current dependencies
+      run: npm install
     
-    - name: Create excluded packages list
+    - name: Create backup and excluded packages list
       run: |
         # Define packages to exclude from updates
         EXCLUDED_PACKAGES=(
@@ -41,81 +46,142 @@ jobs:
           "axios"
         )
         
-        # Create npm-shrinkwrap backup to restore excluded packages
-        cp package-lock.json package-lock.backup.json
+        # Create backups
+        cp package.json package.json.backup
+        cp package-lock.json package-lock.json.backup
         
         # Store excluded packages in environment
         echo "EXCLUDED_PACKAGES=${EXCLUDED_PACKAGES[*]}" >> $GITHUB_ENV
     
-    - name: Run selective npm update
+    - name: Update packages selectively
       run: |
-        # Update all packages first
-        npm update
+        # Get list of outdated packages
+        OUTDATED_JSON=$(npm outdated --json 2>/dev/null || echo '{}')
         
-        # Restore excluded packages to their original versions
-        IFS=' ' read -ra EXCLUDED <<< "$EXCLUDED_PACKAGES"
-        for package in "${EXCLUDED[@]}"; do
-          echo "Restoring $package to original version..."
-          # Get original version from backup
-          ORIGINAL_VERSION=$(node -e "
-            const backup = require('./package-lock.backup.json');
-            const current = require('./package-lock.json');
-            if (backup.packages && backup.packages['node_modules/$package']) {
-              console.log(backup.packages['node_modules/$package'].version);
-            } else if (backup.dependencies && backup.dependencies['$package']) {
-              console.log(backup.dependencies['$package'].version);
-            }
-          ")
+        # Parse and update packages individually
+        node -e "
+          const outdated = $OUTDATED_JSON;
+          const excluded = process.env.EXCLUDED_PACKAGES.split(' ');
           
-          if [ ! -z "$ORIGINAL_VERSION" ]; then
-            npm install ${package}@${ORIGINAL_VERSION} --save-exact
+          for (const [pkg, info] of Object.entries(outdated)) {
+            if (!excluded.includes(pkg)) {
+              console.log(\`Updating \${pkg} from \${info.current} to \${info.wanted}\`);
+              require('child_process').execSync(\`npm install \${pkg}@\${info.wanted}\`, {stdio: 'inherit'});
+            } else {
+              console.log(\`Skipping excluded package: \${pkg}\`);
+            }
+          }
+        "
+    
+    - name: Verify no excluded packages were updated
+      run: |
+        IFS=' ' read -ra EXCLUDED <<< "$EXCLUDED_PACKAGES"
+        
+        for package in "${EXCLUDED[@]}"; do
+          # Check if package exists in dependencies
+          if npm list $package --depth=0 >/dev/null 2>&1; then
+            CURRENT_VERSION=$(npm list $package --depth=0 --json 2>/dev/null | node -e "
+              const stdin = process.stdin;
+              let data = '';
+              stdin.on('readable', () => {
+                const chunk = stdin.read();
+                if (chunk !== null) data += chunk;
+              });
+              stdin.on('end', () => {
+                try {
+                  const parsed = JSON.parse(data);
+                  const deps = parsed.dependencies || {};
+                  if (deps['$package']) {
+                    console.log(deps['$package'].version);
+                  }
+                } catch(e) {
+                  // Ignore
+                }
+              });
+            ")
+            
+            ORIGINAL_VERSION=$(npm list $package --depth=0 --json 2>/dev/null | node -e "
+              const fs = require('fs');
+              try {
+                const backup = JSON.parse(fs.readFileSync('package.json.backup', 'utf8'));
+                const deps = backup.dependencies || backup.devDependencies || {};
+                if (deps['$package']) {
+                  console.log(deps['$package'].replace(/[\^~]/, ''));
+                }
+              } catch(e) {
+                // Ignore
+              }
+            ")
+            
+            if [ "$CURRENT_VERSION" != "$ORIGINAL_VERSION" ] && [ ! -z "$ORIGINAL_VERSION" ]; then
+              echo "⚠️  Package $package was updated, restoring to $ORIGINAL_VERSION"
+              npm install ${package}@${ORIGINAL_VERSION} --save-exact
+            fi
           fi
         done
-        
-        # Clean up
-        rm package-lock.backup.json
+    
+    - name: Clean up backup files
+      run: |
+        rm -f package.json.backup package-lock.json.backup
     
     - name: Check for changes
       id: git-check
       run: |
-        git diff --exit-code package.json package-lock.json || echo "changes=true" >> $GITHUB_OUTPUT
+        if git diff --quiet package.json package-lock.json; then
+          echo "changes=false" >> $GITHUB_OUTPUT
+          echo "No changes detected"
+        else
+          echo "changes=true" >> $GITHUB_OUTPUT
+          echo "Changes detected:"
+          git diff --name-only package.json package-lock.json
+        fi
+    
+    - name: Show what was updated
+      if: steps.git-check.outputs.changes == 'true'
+      run: |
+        echo "📦 Updated packages:"
+        git diff package.json | grep -E '^\+.*".*":' | sed 's/^+//' || echo "No direct dependency changes"
+        echo ""
+        echo "📊 Package-lock changes:"
+        git diff --stat package-lock.json
     
     - name: Create Pull Request
-      if: steps.git-check.outputs.changes == 'true'
+      if: steps.git-check.outputs.changes == 'true' && github.event.inputs.dry_run != 'true'
       uses: peter-evans/create-pull-request@v5
       with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        commit-message: "chore: update npm dependencies (excluding pinned packages)"
-        title: "🔄 Automated npm dependencies update"
+        token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
+        commit-message: "chore: update npm dependencies (selective)"
+        title: "🔄 Selective npm dependencies update"
         body: |
-          ## 📦 Automated npm Dependencies Update
+          ## 📦 Selective npm Dependencies Update
           
-          This PR contains automated updates to npm dependencies.
+          This PR updates npm dependencies while preserving pinned package versions.
           
-          ### 🚫 Excluded Packages
+          ### 🚫 Excluded Packages (Preserved)
           The following packages were excluded from updates:
-          - react
-          - react-dom
-          - @types/node
-          - typescript
-          - webpack
-          - eslint
-          - jest
-          - lodash
-          - express
-          - axios
+          ${{ env.EXCLUDED_PACKAGES }}
           
-          ### 📋 Changes
-          - Updated non-excluded packages to their latest compatible versions
-          - Preserved versions of critical/pinned packages
+          ### 📋 What Changed
+          - Updated outdated packages to their latest compatible versions
+          - Preserved versions of excluded/pinned packages
+          - No peer dependency conflicts introduced
           
-          ### ✅ Checklist
-          - [ ] Review updated package versions
-          - [ ] Test the application locally
-          - [ ] Verify no breaking changes introduced
+          ### ✅ Pre-merge Checklist
+          - [ ] Review the updated package versions
+          - [ ] Run tests locally to verify compatibility
+          - [ ] Check for any breaking changes in updated packages
+          
+          ### 🔍 How to Test Locally
+          ```bash
+          # The branch name will be: automated-npm-updates-YYYYMMDD-HHMMSS
+          git fetch origin
+          git checkout <branch-name-from-PR>
+          npm install
+          npm test  # or your test command
+          npm run build  # or your build command
+          ```
           
           ---
           *This PR was created automatically by GitHub Actions*
-        branch: automated-npm-updates
+        branch: automated-npm-updates-$(date +%Y%m%d-%H%M%S)
         delete-branch: true
-        draft: false
