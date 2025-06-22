@@ -1,0 +1,121 @@
+name: Automated npm Updates
+
+on:
+  schedule:
+    # Run every Monday at 9 AM UTC
+    - cron: '0 9 * * 1'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  update-dependencies:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Create excluded packages list
+      run: |
+        # Define packages to exclude from updates
+        EXCLUDED_PACKAGES=(
+          "react"
+          "react-dom"
+          "@types/node"
+          "typescript"
+          "webpack"
+          "eslint"
+          "jest"
+          "lodash"
+          "express"
+          "axios"
+        )
+        
+        # Create npm-shrinkwrap backup to restore excluded packages
+        cp package-lock.json package-lock.backup.json
+        
+        # Store excluded packages in environment
+        echo "EXCLUDED_PACKAGES=${EXCLUDED_PACKAGES[*]}" >> $GITHUB_ENV
+    
+    - name: Run selective npm update
+      run: |
+        # Update all packages first
+        npm update
+        
+        # Restore excluded packages to their original versions
+        IFS=' ' read -ra EXCLUDED <<< "$EXCLUDED_PACKAGES"
+        for package in "${EXCLUDED[@]}"; do
+          echo "Restoring $package to original version..."
+          # Get original version from backup
+          ORIGINAL_VERSION=$(node -e "
+            const backup = require('./package-lock.backup.json');
+            const current = require('./package-lock.json');
+            if (backup.packages && backup.packages['node_modules/$package']) {
+              console.log(backup.packages['node_modules/$package'].version);
+            } else if (backup.dependencies && backup.dependencies['$package']) {
+              console.log(backup.dependencies['$package'].version);
+            }
+          ")
+          
+          if [ ! -z "$ORIGINAL_VERSION" ]; then
+            npm install ${package}@${ORIGINAL_VERSION} --save-exact
+          fi
+        done
+        
+        # Clean up
+        rm package-lock.backup.json
+    
+    - name: Check for changes
+      id: git-check
+      run: |
+        git diff --exit-code package.json package-lock.json || echo "changes=true" >> $GITHUB_OUTPUT
+    
+    - name: Create Pull Request
+      if: steps.git-check.outputs.changes == 'true'
+      uses: peter-evans/create-pull-request@v5
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        commit-message: "chore: update npm dependencies (excluding pinned packages)"
+        title: "🔄 Automated npm dependencies update"
+        body: |
+          ## 📦 Automated npm Dependencies Update
+          
+          This PR contains automated updates to npm dependencies.
+          
+          ### 🚫 Excluded Packages
+          The following packages were excluded from updates:
+          - react
+          - react-dom
+          - @types/node
+          - typescript
+          - webpack
+          - eslint
+          - jest
+          - lodash
+          - express
+          - axios
+          
+          ### 📋 Changes
+          - Updated non-excluded packages to their latest compatible versions
+          - Preserved versions of critical/pinned packages
+          
+          ### ✅ Checklist
+          - [ ] Review updated package versions
+          - [ ] Test the application locally
+          - [ ] Verify no breaking changes introduced
+          
+          ---
+          *This PR was created automatically by GitHub Actions*
+        branch: automated-npm-updates
+        delete-branch: true
+        draft: false
