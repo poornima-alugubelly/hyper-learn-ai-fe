@@ -14,12 +14,17 @@ on:
 jobs:
   update-dependencies:
     runs-on: ubuntu-latest
+    permissions: # Explicitly set permissions for GITHUB_TOKEN
+      contents: write
+      pull-requests: write
     
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
-        token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
+        # Use a PAT if you need to trigger other workflows or have cross-repo needs
+        # Otherwise, GITHUB_TOKEN with appropriate permissions (set above) is fine.
+        token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }} 
     
     - name: Setup Node.js
       uses: actions/setup-node@v4
@@ -60,15 +65,19 @@ jobs:
         
         # Parse and update packages individually
         node -e "
-          const outdated = $OUTDATED_JSON;
-          const excluded = process.env.EXCLUDED_PACKAGES.split(' ');
+          const outdated = JSON.parse(\`$OUTDATED_JSON\`); // Use backticks for multi-line JSON
+          const excluded = (process.env.EXCLUDED_PACKAGES || '').split(' ');
           
-          for (const [pkg, info] of Object.entries(outdated)) {
-            if (!excluded.includes(pkg)) {
-              console.log(\`Updating \${pkg} from \${info.current} to \${info.wanted}\`);
-              require('child_process').execSync(\`npm install \${pkg}@\${info.wanted}\`, {stdio: 'inherit'});
-            } else {
-              console.log(\`Skipping excluded package: \${pkg}\`);
+          if (Object.keys(outdated).length === 0) {
+            console.log('No outdated packages to update.');
+          } else {
+            for (const [pkg, info] of Object.entries(outdated)) {
+              if (!excluded.includes(pkg)) {
+                console.log(\`Updating \${pkg} from \${info.current} to \${info.wanted}\`);
+                require('child_process').execSync(\`npm install \${pkg}@\${info.wanted}\`, {stdio: 'inherit'});
+              } else {
+                console.log(\`Skipping excluded package: \${pkg}\`);
+              }
             }
           }
         "
@@ -78,80 +87,103 @@ jobs:
         IFS=' ' read -ra EXCLUDED <<< "$EXCLUDED_PACKAGES"
         
         for package in "${EXCLUDED[@]}"; do
-          # Check if package exists in dependencies
-          if npm list $package --depth=0 >/dev/null 2>&1; then
-            CURRENT_VERSION=$(npm list $package --depth=0 --json 2>/dev/null | node -e "
-              const stdin = process.stdin;
-              let data = '';
-              stdin.on('readable', () => {
-                const chunk = stdin.read();
-                if (chunk !== null) data += chunk;
-              });
-              stdin.on('end', () => {
-                try {
-                  const parsed = JSON.parse(data);
-                  const deps = parsed.dependencies || {};
-                  if (deps['$package']) {
-                    console.log(deps['$package'].version);
-                  }
-                } catch(e) {
-                  // Ignore
-                }
-              });
-            ")
-            
-            ORIGINAL_VERSION=$(npm list $package --depth=0 --json 2>/dev/null | node -e "
-              const fs = require('fs');
-              try {
-                const backup = JSON.parse(fs.readFileSync('package.json.backup', 'utf8'));
-                const deps = backup.dependencies || backup.devDependencies || {};
-                if (deps['$package']) {
-                  console.log(deps['$package'].replace(/[\^~]/, ''));
-                }
-              } catch(e) {
-                // Ignore
+          # Get the original specifier from the backup package.json
+          ORIGINAL_SPECIFIER=$(node -e "
+            const fs = require('fs');
+            let specifier = undefined;
+            try {
+              const backup = JSON.parse(fs.readFileSync('package.json.backup', 'utf8'));
+              if (backup.dependencies && backup.dependencies['$package']) {
+                specifier = backup.dependencies['$package'];
+              } else if (backup.devDependencies && backup.devDependencies['$package']) {
+                specifier = backup.devDependencies['$package'];
               }
-            ")
-            
-            if [ "$CURRENT_VERSION" != "$ORIGINAL_VERSION" ] && [ ! -z "$ORIGINAL_VERSION" ]; then
-              echo "⚠️  Package $package was updated, restoring to $ORIGINAL_VERSION"
-              npm install ${package}@${ORIGINAL_VERSION} --save-exact
+            } catch(e) { 
+              // console.error('Error reading backup package.json for $package:', e.message); 
+            }
+            if (specifier !== undefined) console.log(specifier);
+          ")
+
+          # If the package was not in the original dependencies, check if it was added.
+          # If it was added and is in the excluded list, it should be removed.
+          if [ -z "$ORIGINAL_SPECIFIER" ]; then
+            # Check if package is currently listed in package.json (not just installed in node_modules)
+            if node -e "const pkg = JSON.parse(require('fs').readFileSync('package.json', 'utf8')); console.log(!!(pkg.dependencies && pkg.dependencies['$package'] || pkg.devDependencies && pkg.devDependencies['$package']))" | grep -q true; then
+                echo "⚠️ Excluded package '$package' was not in original dependencies but is now present. Removing."
+                npm uninstall "$package"
             fi
+            continue # Move to next excluded package
+          fi
+
+          # Get the current specifier from the current package.json
+          CURRENT_SPECIFIER=$(node -e "
+            const fs = require('fs');
+            let specifier = undefined;
+            try {
+              const current = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+              if (current.dependencies && current.dependencies['$package']) {
+                specifier = current.dependencies['$package'];
+              } else if (current.devDependencies && current.devDependencies['$package']) {
+                specifier = current.devDependencies['$package'];
+              }
+            } catch(e) { 
+              // console.error('Error reading current package.json for $package:', e.message); 
+            }
+            if (specifier !== undefined) console.log(specifier);
+          ")
+
+          # If current specifier is missing (package removed) or different from original, restore.
+          if [ "$CURRENT_SPECIFIER" != "$ORIGINAL_SPECIFIER" ]; then
+            if [ -z "$CURRENT_SPECIFIER" ]; then
+              echo "⚠️ Excluded package '$package' was removed. Restoring to '$ORIGINAL_SPECIFIER'."
+            else
+              echo "⚠️ Specifier for excluded package '$package' changed from '$ORIGINAL_SPECIFIER' to '$CURRENT_SPECIFIER'. Restoring."
+            fi
+            
+            # Determine how to install to preserve the original specifier type
+            # npm install <pkg>@<original_specifier_string> will generally preserve the specifier type
+            # (e.g. ^, ~, exact, tag) in package.json as long as the specifier is valid.
+            echo "   Installing with original specifier: ${package}@${ORIGINAL_SPECIFIER}"
+            npm install "${package}@${ORIGINAL_SPECIFIER}"
+          else
+            echo "✅ Excluded package '$package' specifier ('$ORIGINAL_SPECIFIER') preserved."
           fi
         done
-    
+
     - name: Clean up backup files
+      if: always() # Always run this step, even if previous steps fail
       run: |
         rm -f package.json.backup package-lock.json.backup
     
     - name: Check for changes
       id: git-check
       run: |
-        if git diff --quiet package.json package-lock.json; then
+        if git diff --quiet HEAD -- package.json package-lock.json; then # Compare against HEAD to ensure we see committed changes too
           echo "changes=false" >> $GITHUB_OUTPUT
-          echo "No changes detected"
+          echo "No changes detected in package.json or package-lock.json"
         else
           echo "changes=true" >> $GITHUB_OUTPUT
           echo "Changes detected:"
-          git diff --name-only package.json package-lock.json
+          git diff --name-only HEAD -- package.json package-lock.json
         fi
     
     - name: Show what was updated
       if: steps.git-check.outputs.changes == 'true'
       run: |
-        echo "📦 Updated packages:"
-        git diff package.json | grep -E '^\+.*".*":' | sed 's/^+//' || echo "No direct dependency changes"
+        echo "📦 Updated packages (diff on package.json):"
+        git diff HEAD -- package.json | grep -E '^\+.*".*":' | sed 's/^+//' || echo "No direct dependency changes in package.json diff"
         echo ""
-        echo "📊 Package-lock changes:"
-        git diff --stat package-lock.json
-    
+        echo "📊 Package-lock changes (stat):"
+        git diff --stat HEAD -- package-lock.json
+
     - name: Generate branch name
+      if: steps.git-check.outputs.changes == 'true' # Only generate if there are changes
       id: vars
       run: echo "branch_name=automated-npm-updates-$(date +%Y%m%d-%H%M%S)" >> $GITHUB_OUTPUT
-
+    
     - name: Create Pull Request
       if: steps.git-check.outputs.changes == 'true' && github.event.inputs.dry_run != 'true'
-      uses: peter-evans/create-pull-request@v5
+      uses: peter-evans/create-pull-request@v5 # Consider updating to v6 if available and compatible
       with:
         token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
         commit-message: "chore: update npm dependencies (selective)"
@@ -159,21 +191,22 @@ jobs:
         body: |
           ## 📦 Selective npm Dependencies Update
           
-          This PR updates npm dependencies while preserving pinned package versions.
+          This PR updates npm dependencies while preserving pinned/ranged package versions for excluded packages.
           
-          ### 🚫 Excluded Packages (Preserved)
-          The following packages were excluded from updates:
+          ### 🚫 Excluded Packages (Specifiers Preserved)
+          The version specifiers for the following packages were preserved as they were:
+          ```
           ${{ env.EXCLUDED_PACKAGES }}
+          ```
           
           ### 📋 What Changed
-          - Updated outdated packages to their latest compatible versions
-          - Preserved versions of excluded/pinned packages
-          - No peer dependency conflicts introduced
+          - Updated outdated non-excluded packages to their latest compatible versions (`info.wanted` from `npm outdated`).
+          - Preserved original version specifiers (e.g., `^1.2.3`, `~1.2.3`, `1.2.3`) of excluded packages.
           
           ### ✅ Pre-merge Checklist
-          - [ ] Review the updated package versions
-          - [ ] Run tests locally to verify compatibility
-          - [ ] Check for any breaking changes in updated packages
+          - [ ] Review the updated package versions in `package.json` and `package-lock.json`.
+          - [ ] Run tests locally to verify compatibility.
+          - [ ] Check for any breaking changes in updated packages.
           
           ### 🔍 How to Test Locally
           ```bash
@@ -187,5 +220,5 @@ jobs:
           
           ---
           *This PR was created automatically by GitHub Actions*
-        branch: ${{ steps.vars.outputs.branch_name }} # Use the pre-generated branch name
+        branch: ${{ steps.vars.outputs.branch_name }}
         delete-branch: true
