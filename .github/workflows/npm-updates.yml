@@ -60,28 +60,55 @@ jobs:
     
     - name: Update packages selectively
       run: |
-        # Get list of outdated packages
-        OUTDATED_JSON=$(npm outdated --json 2>/dev/null || echo '{}')
+        echo "Attempting to get outdated packages list..."
+        # Try to get JSON. If npm outdated fails or output is not JSON, default to empty object.
+        # Use --loglevel error to reduce noise from npm itself on stdout.
+        # Use jq to validate and ensure we only pass valid JSON to the node script.
+        # jq -c . will compact the JSON and error if it's not valid.
+        OUTDATED_JSON=$(npm outdated --json --loglevel error | jq -c . 2>/dev/null || echo '{}')
         
+        echo "---BEGIN OUTDATED_JSON (processed by jq or fallback)---"
+        echo "$OUTDATED_JSON"
+        echo "---END OUTDATED_JSON---"
+
         # Parse and update packages individually
         node -e "
-          const outdated = JSON.parse(\`$OUTDATED_JSON\`); // Use backticks for multi-line JSON
+          const outdatedJsonString = \`$OUTDATED_JSON\`; // Using backticks for multi-line string (though jq -c makes it single line)
+          let outdated;
+
+          try {
+            outdated = JSON.parse(outdatedJsonString);
+          } catch (e) {
+            console.error('SyntaxError while parsing OUTDATED_JSON: ', e.message);
+            console.error('Problematic JSON string was (may be truncated if very long):');
+            console.error(outdatedJsonString.substring(0, 1000)); // Print the string that caused the error (or first 1KB)
+            process.exit(1); // Exit with an error code
+          }
+          
           const excluded = (process.env.EXCLUDED_PACKAGES || '').split(' ');
           
           if (Object.keys(outdated).length === 0) {
-            console.log('No outdated packages to update.');
+            console.log('No outdated packages to update (or npm outdated failed/produced no valid JSON).');
           } else {
             for (const [pkg, info] of Object.entries(outdated)) {
-              if (!excluded.includes(pkg)) {
-                console.log(\`Updating \${pkg} from \${info.current} to \${info.wanted}\`);
-                require('child_process').execSync(\`npm install \${pkg}@\${info.wanted}\`, {stdio: 'inherit'});
+              if (info && typeof info === 'object' && info.current && info.wanted) { // Add a check for valid info structure
+                if (!excluded.includes(pkg)) {
+                  console.log(\`Updating '\${pkg}' from '\${info.current}' to '\${info.wanted}'\`);
+                  try {
+                    require('child_process').execSync(\`npm install \${pkg}@\${info.wanted}\`, {stdio: 'inherit'});
+                  } catch (installError) {
+                    console.error(\`Failed to install \${pkg}@\${info.wanted}: \${installError.message}\`);
+                    // Optionally, decide if you want to fail the step here or continue
+                  }
+                } else {
+                  console.log(\`Skipping excluded package: '\${pkg}'\`);
+                }
               } else {
-                console.log(\`Skipping excluded package: \${pkg}\`);
+                console.warn(\`Skipping package '\${pkg}' due to unexpected info structure:\`, info);
               }
             }
           }
         "
-    
     - name: Verify no excluded packages were updated
       run: |
         IFS=' ' read -ra EXCLUDED <<< "$EXCLUDED_PACKAGES"
