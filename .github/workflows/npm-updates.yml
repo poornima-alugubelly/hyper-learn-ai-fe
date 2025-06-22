@@ -145,6 +145,10 @@ jobs:
         echo "📊 Package-lock changes:"
         git diff --stat package-lock.json
     
+    - name: Generate branch name
+      id: vars
+      run: echo "branch_name=automated-npm-updates-$(date +%Y%m%d-%H%M%S)" >> $GITHUB_OUTPUT
+
     - name: Create Pull Request
       if: steps.git-check.outputs.changes == 'true' && github.event.inputs.dry_run != 'true'
       uses: peter-evans/create-pull-request@v5
@@ -173,9 +177,9 @@ jobs:
           
           ### 🔍 How to Test Locally
           ```bash
-          # The branch name will be: automated-npm-updates-YYYYMMDD-HHMMSS
+          # The branch name will be: ${{ steps.vars.outputs.branch_name }}
           git fetch origin
-          git checkout <branch-name-from-PR>
+          git checkout ${{ steps.vars.outputs.branch_name }}
           npm install
           npm test  # or your test command
           npm run build  # or your build command
@@ -183,5 +187,5 @@ jobs:
           
           ---
           *This PR was created automatically by GitHub Actions*
-        branch: automated-npm-updates-$(date +%Y%m%d-%H%M%S)
+        branch: ${{ steps.vars.outputs.branch_name }} # Use the pre-generated branch name
         delete-branch: true
